@@ -13,6 +13,8 @@ Modelar todo como `Space` con campo `type: 'bathroom' | 'kitchen' | ...` (enum e
 
 **Excepción permitida:** copys de UI que hablen al usuario de un espacio concreto. Eso es contenido, no arquitectura, y vive en `src/copy/` (ver §8).
 
+**Dominio del MVP v1: solo baños.** El modelo de datos (§4.2) está diseñado para soportar cocinas (`type='kitchen'`) y otros tipos sin tocar arquitectura. La UI del MVP v1 expone únicamente `bathroom`; cocinas se activan en una fase posterior siguiendo la checklist de §12. Esta restricción es deliberada: probar la abstracción del modelo manteniendo un alcance acotado.
+
 ---
 
 ## 2. Stack técnico
@@ -280,7 +282,7 @@ Modelo del dominio de reservas. Cada booking representa que un guest ha solicita
 - `status booking_status NOT NULL DEFAULT 'pending_host_approval'`
 - `starts_at timestamptz NOT NULL`
 - `ends_at timestamptz NOT NULL`
-- `price_total_cents integer NOT NULL` — en céntimos para evitar errores de float. Ver §13 para el ADR del modelo de pagos.
+- `price_total_cents integer NOT NULL` — en céntimos para evitar errores de float. Ver §13.4 para el ADR del modelo de pagos.
 - `currency text NOT NULL DEFAULT 'EUR'`
 - `notes text` — mensaje opcional del guest al host (p. ej. "llego un poco tarde")
 - `created_at timestamptz NOT NULL DEFAULT now()`
@@ -394,7 +396,7 @@ CREATE POLICY "Hosts manage bookings of their spaces"
 
 #### Qué queda explícitamente fuera del modelo de bookings en MVP v1
 
-- Sin `price_host_cents` / `price_fee_cents` (pagos fuera del MVP v1, ver ADR §13).
+- Sin `price_host_cents` / `price_fee_cents` (pagos fuera del MVP v1, ver ADR §13.4).
 - Sin `payment_intent_id` ni referencia a Stripe — se añade cuando se integren pagos.
 - Sin reviews ni ratings asociados a bookings — tabla `reviews` se creará cuando entre esa feature.
 - Sin mensajería entre guest y host — el campo `notes` es un mensaje único unidireccional, no un hilo.
@@ -406,6 +408,7 @@ CREATE POLICY "Hosts manage bookings of their spaces"
 - `FeaturedSpace` / `SpaceCardProps` en `src/components/FeaturedCarousel/*` — **tipos de UI**, no conectados a BD todavía.
 - `RootStackParamList` en `src/navigation/AppNavigator.tsx:8-12`.
 - `TabParamList` en `src/navigation/TabNavigator.tsx:12-15`.
+- **Tipo `Booking` (post-migración §11.4)**: se generará automáticamente en `src/types/database.ts` a partir de la tabla `bookings`. No crear interfaces manuales que dupliquen ese tipo. Si la UI necesita un tipo derivado (p. ej. `BookingWithSpace` para pintar listados), definirlo como type alias sobre el tipo generado, no como interface independiente.
 
 ---
 
@@ -422,17 +425,17 @@ Estado a 2026-04-22. ✅ funcional / 🟡 a medias / 🔴 mock o ausente.
 | Logout | ✅ | `src/screens/ProfileScreen.tsx:91-93` | |
 | Subida avatar a Storage | ✅ | `src/screens/ProfileScreen.tsx:30-88` | base64 → `decode()`; bucket `avatars` |
 | BecomeHost — paso 1 (descripción) | 🟡 | `src/screens/BecomeHostScreen.tsx:14-67` | Crea/update `propiedades` con `estado='borrador'` |
-| BecomeHost — paso 2 (ubicación) | 🟡 | `src/screens/MapScreen.tsx:31-57` | Guarda lat/lng; **no navega a paso siguiente** (ver §11.7, secuencia canónica) |
+| BecomeHost — paso 2 (ubicación) | 🟡 | `src/screens/MapScreen.tsx:31-57` | Guarda lat/lng; **no navega a paso siguiente**. Secuencia canónica completa: §11.7 |
 | Home / carrusel destacados | 🔴 mock | `src/screens/HomeScreen.tsx:8-33` | Array `FEATURED_SPACES` hardcoded, no lee de Supabase |
 | Detalle de espacio | 🔴 | `src/screens/HomeScreen.tsx:53-56` | `console.log('Space pressed')` |
 | Listado completo ("View all") | 🔴 | `src/screens/HomeScreen.tsx:57-60` | `console.log('View all pressed')` |
 | Marcar usuario como `is_host=true` | 🔴 | — | Disparador objetivo: publicación del primer espacio (§11.7) |
 | Recuperación de contraseña | 🔴 | — | Roadmap corto (§11), no bloqueante |
-| Crear reserva (guest) | 🔴 | — | Nueva en MVP v1 Fase 3 |
-| Aceptar/rechazar reserva (host) | 🔴 | — | Nueva en MVP v1 Fase 3 |
-| Ver mis reservas (guest) | 🔴 | — | Nueva en MVP v1 Fase 3 |
-| Ver solicitudes recibidas (host) | 🔴 | — | Nueva en MVP v1 Fase 3 |
-| Cancelar reserva (guest) | 🔴 | — | Nueva en MVP v1 Fase 3 |
+| Crear reserva (guest) | 🔴 | — | Definida en PRODUCT.md (alcance MVP v1) |
+| Aceptar/rechazar reserva (host) | 🔴 | — | Definida en PRODUCT.md (alcance MVP v1) |
+| Ver mis reservas (guest) | 🔴 | — | Definida en PRODUCT.md (alcance MVP v1) |
+| Ver solicitudes recibidas (host) | 🔴 | — | Definida en PRODUCT.md (alcance MVP v1) |
+| Cancelar reserva (guest) | 🔴 | — | Definida en PRODUCT.md (alcance MVP v1) |
 
 ---
 
@@ -598,9 +601,18 @@ Orden de PRs acordado. No solapar scopes entre PRs. Cuando se complete un PR, ta
 - Borrar `src/components/Navbar/*` (ver §10.3).
 - PR pequeño, sin mezcla.
 
-### 11.7 Generación de componentes desde Figma
-- Usar MCP de Figma (`.mcp.json`) para generar nuevas pantallas del flujo BecomeHost (fotos, precio, disponibilidad, publicar — §5).
-- Secuencia canónica del flujo: `tipo` → `descripción` → `ubicación` → `fotos` → `precio` → `disponibilidad` → `publicar`. Cada paso guarda con `status='draft'`; al completar el último, `status='published'` y (vía trigger) `profile.is_host = true`.
+### 11.7 Completar flujo BecomeHost (Figma MCP + secuencia canónica)
+
+**Secuencia canónica del flujo BecomeHost** (referencia desde §5):
+
+`tipo` → `descripción` → `ubicación` → `fotos` → `precio` → `disponibilidad` → `publicar`
+
+Cada paso guarda en `spaces` con `status='draft'`. Al completar el último paso, `status='published'` y (vía trigger) `profile.is_host = true`.
+
+**Tareas del PR:**
+- Usar MCP de Figma (`.mcp.json`) para generar las pantallas faltantes del flujo: fotos, precio, disponibilidad, publicar.
+- Conectar las pantallas existentes (descripción, ubicación) a la secuencia canónica.
+- Actualizar §5 cuando cada paso del flujo pase de 🟡 a ✅.
 
 ### Histórico de PRs completados
 
@@ -702,3 +714,20 @@ Registro cronológico de decisiones arquitectónicas con contexto. Añadir entra
 - Mantener todo en Context: viable a corto plazo, inviable a medio; sin cache, sin revalidación, sin dedup de requests.
 
 **Consecuencia:** Cache, revalidación, optimistic updates y dedup gratuitos. Refuerza §8.4: prohibido `useState + useEffect + supabase.from()` en componentes de pantalla.
+
+### 13.4 — 2026-04-22 — Pagos fuera del MVP v1
+
+**Contexto:** Un marketplace de alquiler de espacios necesita eventualmente integrar pagos para ser un producto real. La integración correcta (Stripe Connect para flujos host↔plataforma↔guest, cumplimiento PSD2/SCA, gestión de disputas, refunds parciales, payouts) es trabajo de semanas y conceptualmente complejo. Meterla en el MVP v1 multiplica el alcance y aplaza el momento en el que tenemos algo end-to-end funcionando.
+
+**Decisión:** El MVP v1 no integra pagos. El flujo de reserva termina en el estado `confirmed` cuando el host acepta. El intercambio económico ocurre fuera de la aplicación (en persona, Bizum, transferencia, lo que las dos partes acuerden). El campo `bookings.price_total_cents` registra el precio acordado para referencia, no se cobra automáticamente.
+
+**Alternativas descartadas:**
+- Stripe Connect en v1: alarga el MVP varios meses con un coste de complejidad desproporcionado para esta fase.
+- Mock de pagos (UI de pago sin backend real): genera deuda técnica y confunde sobre qué partes del sistema están realmente probadas.
+- Diferir reservas también: rompe la utilidad del MVP — sin reservas el producto no se puede demostrar end-to-end.
+
+**Consecuencia:**
+- El esquema de `bookings` (§4.2) no incluye `price_host_cents`, `price_fee_cents`, `payment_intent_id`, `refund_status` ni similares. Se añadirán en el PR de integración de pagos.
+- Las máquinas de estado del booking (`pending_host_approval` → `confirmed` → `completed`) no tienen estados intermedios de pago.
+- Stripe Connect entra como vertical slice independiente post-MVP. Se documentará su ADR cuando llegue.
+- Es una decisión defendible y reversible: añadir pagos después es un PR aditivo, no un refactor.
