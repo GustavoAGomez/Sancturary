@@ -6,10 +6,12 @@ Guía viva para cualquier asistente o contribuyente que trabaje en este reposito
 
 ## 1. Visión del producto
 
-Marketplace de alquiler de **espacios por horas**. Dominio inicial: **baños**. Extensible a cocinas y, potencialmente, a otros espacios (salas, estudios, etc.).
+**Sanctuary** es un marketplace de alquiler de **espacios por horas**. Dominio inicial: **baños**. Extensible a cocinas y, potencialmente, a otros espacios (salas, estudios, etc.).
 
 **Regla de diseño de oro (no negociable):**
 Modelar todo como `Space` con campo `type: 'bathroom' | 'kitchen' | ...` (enum extensible). El tipo es **siempre un dato, nunca parte del identificador**. Queda prohibido hardcodear `bathroom` / `baño` / `kitchen` / `cocina` en nombres de componentes, hooks, funciones, columnas o variables reutilizables.
+
+> El nombre interno del producto es **Sanctuary**. La estética visual ("The Sanctuary") referenciada en §6 se alinea con este nombre. Cualquier copy de UI o asset que mencione el nombre del producto debe usar "Sanctuary".
 
 **Excepción permitida:** copys de UI que hablen al usuario de un espacio concreto. Eso es contenido, no arquitectura, y vive en `src/copy/` (ver §8).
 
@@ -213,8 +215,11 @@ VALUES (
 - `status space_status NOT NULL DEFAULT 'draft'` (era `estado`, ahora enum)
 - `latitude double precision`
 - `longitude double precision`
+- `is_blocked boolean NOT NULL DEFAULT false` ← **NUEVO**, controlado por el host desde "Mis espacios"
 - `created_at timestamptz NOT NULL DEFAULT now()`
 - `updated_at timestamptz NOT NULL DEFAULT now()` ← **NUEVO**, mantenido por trigger
+
+> El flag `is_blocked` permite al host pausar la recepción de nuevas reservas sobre un espacio publicado sin tener que archivarlo. Las reservas ya existentes (`pending_host_approval`, `confirmed`, `in_use`) no se ven afectadas: siguen su ciclo de vida normal. Las RLS policies de INSERT de `bookings` deben validar `is_blocked = false` antes de permitir nuevas reservas.
 
 **Enums:**
 
@@ -295,10 +300,12 @@ Modelo del dominio de reservas. Cada booking representa que un guest ha solicita
 ```sql
 CREATE TYPE booking_status AS ENUM (
   'pending_host_approval',  -- guest ha solicitado, host no ha respondido
-  'confirmed',              -- host ha aceptado
-  'rejected',               -- host ha rechazado
-  'cancelled_by_guest',     -- guest canceló antes de la fecha
-  'completed'               -- la ventana temporal ya pasó y fue 'confirmed'
+  'confirmed',              -- host ha aceptado, reserva activa
+  'in_use',                 -- host marcó la llegada del guest
+  'completed',              -- host marcó que el guest terminó (transición manual)
+  'rejected',               -- host rechazó la solicitud inicial
+  'cancelled_by_guest',     -- guest canceló antes o durante 'confirmed'
+  'no_show'                 -- host marcó que el guest no apareció
 );
 ```
 
@@ -325,10 +332,10 @@ ALTER TABLE bookings ADD CONSTRAINT bookings_no_overlap
     space_id WITH =,
     tstzrange(starts_at, ends_at, '[)') WITH &&
   )
-  WHERE (status IN ('pending_host_approval', 'confirmed'));
+  WHERE (status IN ('pending_host_approval', 'confirmed', 'in_use'));
 ```
 
-Esto garantiza a nivel de BD que no puede haber dos bookings activos (pending o confirmed) del mismo space con ventanas que se solapen. Los `rejected`, `cancelled_by_guest` y `completed` quedan excluidos del índice porque ya no bloquean disponibilidad.
+Esto garantiza a nivel de BD que no puede haber dos bookings activos (pending, confirmed o in_use) del mismo space con ventanas que se solapen. Los `rejected`, `cancelled_by_guest`, `completed` y `no_show` quedan excluidos del índice porque ya no bloquean disponibilidad.
 
 **Trigger `updated_at`:**
 
@@ -392,7 +399,14 @@ CREATE POLICY "Hosts manage bookings of their spaces"
   );
 ```
 
-> Nota: las transiciones válidas de `status` (máquina de estados) se validan con trigger `BEFORE UPDATE`, no con RLS. Ejemplo: un host no puede pasar de `rejected` a `confirmed`. Definir en el PR de migración §11.4.
+> Nota: las transiciones válidas de `status` se validan con trigger `BEFORE UPDATE`, no con RLS. La máquina de estados completa (formalizada en PRODUCT.md §4.3) es:
+>
+> - `pending_host_approval` → `confirmed` (host acepta) | `rejected` (host rechaza) | `cancelled_by_guest` (guest cancela)
+> - `confirmed` → `in_use` (host marca llegada) | `no_show` (host marca no aparición) | `cancelled_by_guest` (guest cancela)
+> - `in_use` → `completed` (host marca terminado)
+> - Estados terminales (sin transiciones salientes): `completed`, `rejected`, `cancelled_by_guest`, `no_show`.
+>
+> Las transiciones `confirmed → in_use` y `in_use → completed` son **exclusivas del host**. Ninguna transición es automática por tiempo. Implementar el trigger en el PR §11.4.
 
 #### Qué queda explícitamente fuera del modelo de bookings en MVP v1
 
@@ -731,3 +745,25 @@ Registro cronológico de decisiones arquitectónicas con contexto. Añadir entra
 - Las máquinas de estado del booking (`pending_host_approval` → `confirmed` → `completed`) no tienen estados intermedios de pago.
 - Stripe Connect entra como vertical slice independiente post-MVP. Se documentará su ADR cuando llegue.
 - Es una decisión defendible y reversible: añadir pagos después es un PR aditivo, no un refactor.
+
+### 13.5 — 2026-04-22 — Separación entre estado del espacio y estado de la reserva
+
+**Contexto:** Una versión preliminar del modelo confundía dos conceptos: el estado operativo de un espacio (disponible / bloqueado) y el estado de una reserva concreta sobre ese espacio (reservado / en uso / completado). Modelar ambos como un único campo `state` en `spaces` rompe el producto: un mismo espacio tiene N reservas simultáneas en franjas distintas, y "está reservado" depende de qué franja se consulte.
+
+**Decisión:** Modelado separado en dos entidades:
+
+- **`spaces`** tiene dos propiedades operativas: `status` (`draft` / `published` / `archived`, ciclo de publicación) e `is_blocked` (boolean, pausa operativa controlada por el host).
+- **`bookings`** tiene su propio enum `booking_status` con el ciclo de vida de cada reserva concreta (ver §4.2).
+- "Está libre tal franja" **no es un campo guardado**: se calcula consultando si existe algún booking con estado en (`pending_host_approval`, `confirmed`, `in_use`) cuyo `tstzrange(starts_at, ends_at)` solape con la franja consultada.
+
+**Alternativas descartadas:**
+- Campo `state` único en `spaces` con valores `'available' | 'reserved' | 'in_use' | 'blocked'`: rompe con múltiples reservas simultáneas en franjas distintas. Imposible de mantener consistente.
+- Campo `current_booking_id` en `spaces`: nuevamente asume una sola reserva activa por espacio. No escala más allá del primer mes de uso real.
+- Vista materializada con disponibilidad calculada: complejidad innecesaria para un MVP. La query directa sobre `bookings` con el índice GiST es suficientemente rápida hasta millones de filas.
+
+**Consecuencia:**
+- **Supersede parcial de §13.4**: la parentética de §13.4 que enumera la máquina de estados (`pending_host_approval → confirmed → completed`) refleja el modelo conocido en el momento de redactar ese ADR (tres estados). El modelo definitivo formalizado aquí incluye `in_use` y `no_show` como estados adicionales. §13.4 no se edita: las consecuencias técnicas que enumera siguen siendo todas válidas, simplemente se aplican sobre una máquina de estados ampliada.
+- Un espacio puede tener decenas de reservas pasadas, presentes y futuras simultáneamente, cada una con su propio estado.
+- La UI muestra al host (P8, P10) los estados de las reservas, no del espacio. La UI muestra al guest (P3, P4, P5) si el espacio "acepta reservas" en general, y la disponibilidad concreta al elegir franja en P5.
+- El constraint `EXCLUDE USING gist` con filtro por `status IN (...)` es la única protección contra double-booking. No hay otra fuente de verdad sobre "está ocupada esta franja".
+- Esta separación está documentada como **principio de producto 2.6** en PRODUCT.md y debe respetarse en cualquier feature futura. Cualquier "feature de calendario" en v2+ se construye encima de este modelo, no lo sustituye.
