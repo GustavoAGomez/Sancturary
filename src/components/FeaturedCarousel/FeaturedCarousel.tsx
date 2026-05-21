@@ -9,23 +9,23 @@ import {
 import SpaceCard, { SpaceCardProps } from './SpaceCard';
 import { colors, typography, spacing, radii, shadows } from '../../theme';
 
-// Cada item del carrusel extiende SpaceCard y añade un id
+// Each carousel item extends SpaceCard and adds an id
 export interface FeaturedSpace extends Omit<SpaceCardProps, 'onPress' | 'onFavoritePress'> {
   id: string;
 }
 
 interface FeaturedCarouselProps {
-  /** Título de la sección */
+  /** Section title */
   title?: string;
-  /** Subtítulo descriptivo */
+  /** Descriptive subtitle */
   subtitle?: string;
-  /** Lista de espacios a mostrar */
+  /** List of spaces to display */
   spaces: FeaturedSpace[];
-  /** Callback al pulsar "View all" */
+  /** Callback when "View all" is pressed */
   onViewAll?: () => void;
-  /** Callback al pulsar una tarjeta */
+  /** Callback when a card is pressed */
   onSpacePress?: (spaceId: string) => void;
-  /** Callback al pulsar favorito en una tarjeta */
+  /** Callback when the favorite button on a card is pressed */
   onFavoritePress?: (spaceId: string) => void;
 }
 
@@ -39,7 +39,7 @@ export default function FeaturedCarousel({
 }: FeaturedCarouselProps) {
   return (
     <View style={styles.container}>
-      {/* Encabezado: título + "View all" */}
+      {/* Header: title + "View all" */}
       <View style={styles.header}>
         <View style={styles.headerText}>
           <Text style={styles.title}>{title}</Text>
@@ -56,7 +56,7 @@ export default function FeaturedCarousel({
         </TouchableOpacity>
       </View>
 
-      {/* Carrusel horizontal de tarjetas */}
+      {/* Horizontal carousel of cards */}
       <FlatList
         data={spaces}
         keyExtractor={(item) => item.id}
@@ -89,12 +89,12 @@ const styles = StyleSheet.create({
     ...shadows.stickyFooter,
   },
 
-  // --- Encabezado ---
+  // --- Header ---
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-end',
-    paddingHorizontal: spacing[6] + spacing[2], // 24 + 8 = 32 (24 sección + 8 inner)
+    paddingHorizontal: spacing[6] + spacing[2], // 24 + 8 = 32 (24 section + 8 inner)
     marginBottom: spacing[8],
   },
   headerText: {
@@ -114,7 +114,7 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
   },
 
-  // --- Botón "View all" ---
+  // --- "View all" button ---
   viewAllButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -130,7 +130,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // --- Carrusel ---
+  // --- Carousel ---
   carouselContent: {
     paddingHorizontal: spacing[6],
   },
